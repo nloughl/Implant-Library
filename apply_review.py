@@ -61,6 +61,8 @@ _FILLABLE_FIELDS: List[str] = [
     'bearing_type',
     'metal_material',
     'poly_material',
+    'antioxidant',
+    'surface_treatment',
     'material_standard',
     'design_fixation_surface',
     'design_articular_surface',

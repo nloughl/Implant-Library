@@ -859,14 +859,18 @@ class KneeImplantPipeline:
         """
         Fetch deviceDescription + deviceSizes from the GUDID REST API for
         records that have a DEVICE_ID.  Results are cached locally so
-        subsequent runs only fetch new DIs.  Skipped when
-        enrich_gudid_descriptions=False or no DEVICE_ID column present.
+        subsequent runs only fetch new DIs.  When enrich_gudid_descriptions=False
+        (--no-gudid-api), no API calls are made but cached results are still applied.
         """
         if not self.enrich_gudid_descriptions:
             logger.info(
-                "GUDID description enrichment skipped (enrich_gudid_descriptions=False)"
+                "GUDID description enrichment: API disabled, applying cached results only"
             )
-            return df
+            return _enrich_gudid_descriptions(
+                df,
+                cache_path=self.gudid_description_cache,
+                dry_run=True,
+            )
         return _enrich_gudid_descriptions(
             df,
             cache_path=self.gudid_description_cache,
@@ -1059,18 +1063,16 @@ class KneeImplantPipeline:
     def _enrich(self, record: ImplantRecord, eifu_lookup: Dict[str, Dict]) -> None:
         """Classify component type, extract design fields, enrich from eIFU."""
         search_text = " ".join(
-            filter(
-                None,
-                [
-                    record.device_description,
-                    record.device_name,
-                    record.brand_name,
-                    record.mdall_brand_name,
-                    record.version_model_number,
-                    record.gmdn_name,
-                    record.notes,
-                ],
-            )
+            v for v in [
+                record.device_description,
+                record.device_name,
+                record.brand_name,
+                record.mdall_brand_name,
+                record.version_model_number,
+                record.gmdn_name,
+                record.notes,
+            ]
+            if isinstance(v, str) and v
         )
 
         # Component type
@@ -1088,16 +1090,14 @@ class KneeImplantPipeline:
         # inserts regardless of actual CR/PS/CCK design.  Use only fields that
         # carry device-specific information.
         brand_text = " ".join(
-            filter(
-                None,
-                [
-                    record.device_description,
-                    record.mdall_brand_name,
-                    record.brand_name,
-                    record.version_model_number,
-                    record.notes,
-                ],
-            )
+            v for v in [
+                record.device_description,
+                record.mdall_brand_name,
+                record.brand_name,
+                record.version_model_number,
+                record.notes,
+            ]
+            if v and isinstance(v, str)
         )
         if not record.fixation:
             record.fixation = FieldExtractor.extract_fixation(search_text)
@@ -1222,6 +1222,72 @@ class KneeImplantPipeline:
         return df
 
     # ------------------------------------------------------------------
+    # Post-dedup review flag recomputation
+    # ------------------------------------------------------------------
+
+    def _recompute_review_flags(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Recompute needs_review and field_status for every row after deduplication.
+
+        _merge_catalogue_group() coalesces empty fields from secondary rows into
+        the primary row, but the primary's needs_review and field_status were set
+        before that merge.  A field marked MISSING may now be filled; this method
+        re-evaluates every applicable field against the actual values in the
+        merged DataFrame so the final CSV and review reports are accurate.
+        """
+        APPLICABILITY = FieldApplicabilityMatrix.APPLICABILITY
+
+        def _recompute_row(row: pd.Series) -> pd.Series:
+            comp = row.get("component_type") or ""
+            try:
+                fs = (
+                    json.loads(row["field_status"])
+                    if isinstance(row["field_status"], str)
+                    else {}
+                )
+            except Exception:
+                fs = {}
+
+            if not comp:
+                # No component type — can't evaluate applicability; leave unchanged
+                return pd.Series(
+                    {
+                        "needs_review": row.get("needs_review", False),
+                        "field_status": row["field_status"],
+                    }
+                )
+
+            needs_review = False
+            for fname, applicable_types in APPLICABILITY.items():
+                if fname not in df.columns:
+                    continue
+                val = row.get(fname)
+                if comp not in applicable_types:
+                    fs[fname] = FieldStatus.NOT_APPLICABLE.value
+                elif _is_empty(val) or str(val).strip() in ("N/A", "n/a"):
+                    fs[fname] = FieldStatus.MISSING.value
+                    needs_review = True
+                else:
+                    fs[fname] = FieldStatus.PRESENT.value
+
+            return pd.Series(
+                {"needs_review": needs_review, "field_status": json.dumps(fs)}
+            )
+
+        recomputed = df.apply(_recompute_row, axis=1)
+        df = df.copy()
+        df["needs_review"] = recomputed["needs_review"]
+        df["field_status"] = recomputed["field_status"]
+
+        n_flagged = int(df["needs_review"].sum())
+        logger.info(
+            "Post-dedup review flags recomputed: %d / %d records need review",
+            n_flagged,
+            len(df),
+        )
+        return df
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
 
@@ -1320,6 +1386,7 @@ class KneeImplantPipeline:
 
         # -- Stage 8: export ---------------------------------------------
         df = self._to_dataframe()
+        df = self._recompute_review_flags(df)
         self._print_summary(df)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

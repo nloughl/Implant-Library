@@ -30,6 +30,7 @@ python mdall_bulk_downloader.py --term Triathlon
 python mdall_bulk_downloader.py --merge-gudid gudid_downloads/knee_devices_bulk_*.csv
 """
 
+import os
 import time
 import logging
 from datetime import datetime
@@ -39,12 +40,13 @@ from typing import Dict, List, Optional
 import pandas as pd
 import requests
 
+os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(
-            f'mdall_bulk_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+            f'logs/mdall_bulk_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
         ),
         logging.StreamHandler(),
     ],

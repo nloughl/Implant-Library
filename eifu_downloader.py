@@ -63,6 +63,7 @@ Usage (standalone)
 import argparse
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -87,12 +88,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 
+os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(
-            f'eifu_download_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+            f'logs/eifu_download_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
         ),
         logging.StreamHandler(),
     ],

@@ -13,6 +13,7 @@ One request per product code — no pagination needed.
 
 import io
 import json
+import os
 import zipfile
 import requests
 import pandas as pd
@@ -24,12 +25,13 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 import logging
 
 # Configure logging
+os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(
-            f'gudid_bulk_download_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+            f'logs/gudid_bulk_download_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
         ),
         logging.StreamHandler(),
     ],
