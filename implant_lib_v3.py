@@ -79,6 +79,64 @@ logger = logging.getLogger(__name__)
 
 
 # ===========================================================================
+# Deduplication helpers (module-level so static methods can reference them)
+# ===========================================================================
+
+# Fields where we coalesce: take the first non-empty value across all rows
+# that share a catalogue_num (secondary rows may fill gaps in the primary).
+_COALESCE_FIELDS = [
+    "component_type", "component_description",
+    "stability", "bearing_type", "fixation",
+    "metal_material", "poly_material", "antioxidant",
+    "ceramic_material", "surface_treatment",
+    "side", "size", "thickness", "ap_length", "ml_width", "diameter",
+    "design_articular_surface", "design_fixation_surface",
+    "device_description", "device_sizes_text",
+    "brand_name", "mdall_brand_name", "gmdn_name",
+    "notes",
+]
+
+
+def _is_empty(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, float) and pd.isna(v):
+        return True
+    return str(v).strip() == ""
+
+
+def _merge_catalogue_group(group: pd.DataFrame) -> pd.Series:
+    """
+    Merge a group of rows that share the same catalogue_num.
+
+    Primary row (iloc[0], already sorted best-first) is the base.
+    Empty fields in the primary are filled from secondary rows so that
+    information unique to a secondary product code (e.g. bearing_type from
+    an NJL mobile-bearing code) is not discarded.
+    product_code and device_name are aggregated into pipe-separated strings
+    so every associated FDA code is visible in the output.
+    """
+    primary = group.iloc[0].copy()
+
+    for col in _COALESCE_FIELDS:
+        if col not in group.columns:
+            continue
+        if _is_empty(primary[col]):
+            for val in group[col].iloc[1:]:
+                if not _is_empty(val):
+                    primary[col] = val
+                    break
+
+    codes = [str(v) for v in group["product_code"] if not _is_empty(v)]
+    primary["product_code"] = " | ".join(dict.fromkeys(codes))
+
+    names = [str(v) for v in group["device_name"] if not _is_empty(v)]
+    primary["device_name"] = " | ".join(dict.fromkeys(names))
+
+    return primary
+
+
+# ===========================================================================
 # Data structures
 # ===========================================================================
 
@@ -279,14 +337,21 @@ class FieldExtractor:
         polymer = None
         antioxidant = None
         if "uhmwpe" in t or "polyethylene" in t:
-            is_xlpe = bool(
+            is_hxlpe = bool(
+                re.search(r"highly\s+cross.?link(?:ed)?|hxlpe", t)
+            )
+            is_xlpe = is_hxlpe or bool(
                 re.search(r"xlpe|cross.?link(?:ed)?", t)
             )
             is_vite = bool(
                 re.search(r"vitamin\s*e\b|vit\.?\s*e\b|vivacit", t)
             )
 
-            if is_xlpe and is_vite:
+            if is_hxlpe and is_vite:
+                polymer = "HXLPE+VitE"
+            elif is_hxlpe:
+                polymer = "HXLPE"
+            elif is_xlpe and is_vite:
                 polymer = "XLPE+VitE"
             elif is_xlpe:
                 polymer = "XLPE"
@@ -1015,10 +1080,29 @@ class KneeImplantPipeline:
             )
 
         # Design fields
+        # For stability: GMDN terms all say "semi-constrained" (GMDN category for
+        # knee inserts) which overrides actual CR/PS info in brand names.
+        # Use brand/description text first; only fall through if still unset.
+        # Stability search excludes device_name (FDA product code description) and
+        # gmdn_name because both generically say "semi-constrained" for all knee
+        # inserts regardless of actual CR/PS/CCK design.  Use only fields that
+        # carry device-specific information.
+        brand_text = " ".join(
+            filter(
+                None,
+                [
+                    record.device_description,
+                    record.mdall_brand_name,
+                    record.brand_name,
+                    record.version_model_number,
+                    record.notes,
+                ],
+            )
+        )
         if not record.fixation:
             record.fixation = FieldExtractor.extract_fixation(search_text)
         if not record.stability:
-            record.stability = FieldExtractor.extract_stability(search_text)
+            record.stability = FieldExtractor.extract_stability(brand_text)
         if not record.bearing_type:
             record.bearing_type = FieldExtractor.extract_bearing_type(search_text)
         if not record.surface_treatment:
@@ -1053,10 +1137,16 @@ class KneeImplantPipeline:
         if not record.side and cat_fields["side"]:
             record.side = cat_fields["side"]
         if not record.thickness and cat_fields["thickness"]:
-            record.thickness = cat_fields["thickness"]
-        # Only fill stability from catalogue if not yet set and applicable
+            try:
+                record.thickness = float(cat_fields["thickness"])
+            except (ValueError, TypeError):
+                pass
         if not record.stability and cat_fields["stability"]:
             record.stability = cat_fields["stability"]
+        if not record.poly_material and cat_fields.get("poly_material"):
+            record.poly_material = cat_fields["poly_material"]
+        if not record.antioxidant and cat_fields.get("antioxidant"):
+            record.antioxidant = cat_fields["antioxidant"]
 
         # Confidence score: fraction of non-empty non-meta fields
         total = 0
@@ -1084,14 +1174,51 @@ class KneeImplantPipeline:
     # Export
     # ------------------------------------------------------------------
 
+    # Fields where we take the first non-empty value across all rows sharing
+    # a catalogue number.  Order matters: we try primary first, then fill from
+    # secondary rows only when the primary is empty.
     def _to_dataframe(self) -> pd.DataFrame:
         rows = [asdict(r) for r in self.records]
         df = pd.DataFrame(rows)
-        if not df.empty:
-            df["data_source"] = df["data_source"].apply(
-                lambda x: ", ".join(x) if isinstance(x, list) else x
+        if df.empty:
+            return df
+
+        df["data_source"] = df["data_source"].apply(
+            lambda x: ", ".join(x) if isinstance(x, list) else x
+        )
+        df["field_status"] = df["field_status"].apply(json.dumps)
+
+        # Deduplicate on catalogue_num: a catalogue number may appear under
+        # multiple FDA product codes (e.g. KWH + NJL).  Each row has already
+        # been individually enriched, so secondary rows may carry fields the
+        # primary lacks (e.g. bearing_type from the NJL mobile-bearing code).
+        # Strategy:
+        #   1. Sort by source quality (BOTH > GUDID_ONLY > MDALL_ONLY) then
+        #      confidence_score descending so iloc[0] is always the best row.
+        #   2. Coalesce empty fields in the primary from secondary rows.
+        #   3. Collect all product codes into a pipe-separated string.
+        if "catalogue_num" in df.columns:
+            n_before = len(df)
+            source_order = {"BOTH": 0, "GUDID_ONLY": 1, "MDALL_ONLY": 2}
+            df["_src_rank"] = df["source_db"].map(source_order).fillna(9)
+            df = df.sort_values(
+                ["_src_rank", "confidence_score"], ascending=[True, False]
             )
-            df["field_status"] = df["field_status"].apply(json.dumps)
+            df = (
+                df.groupby("catalogue_num", sort=False, group_keys=False)
+                .apply(_merge_catalogue_group)
+                .drop(columns=["_src_rank"])
+                .reset_index(drop=True)
+            )
+            n_removed = n_before - len(df)
+            if n_removed:
+                logger.info(
+                    "Merged %d duplicate catalogue number(s) into %d unique records"
+                    " (fields coalesced, all product codes preserved)",
+                    n_removed,
+                    len(df),
+                )
+
         return df
 
     # ------------------------------------------------------------------

@@ -44,6 +44,8 @@ _EMPTY: Dict[str, Optional[str]] = {
     "side": None,
     "thickness": None,
     "stability": None,
+    "poly_material": None,
+    "antioxidant": None,
 }
 
 
@@ -123,6 +125,21 @@ _PERSONA_INS_STAB = {
     "8": "CCK",
 }
 
+# Middle group of insert catalogue number: tibia size + femoral size compatibility
+_PERSONA_INS_COMPAT = {
+    "001": "A-B / CR Fem 1-2",
+    "002": "A-B / CR Fem 3-6",
+    "003": "C-D / CR Fem 1-2",
+    "004": "C-D / CR Fem 3-9",
+    "005": "E-F / CR Fem 3-11",
+    "006": "G-H / CR Fem 7-12",
+    "007": "J / CR Fem 9-12",
+    "008": "E-F / PS Fem 10-11",
+    "009": "G-H / PS Fem 6-9",
+    "010": "G-H / PS Fem 10-12",
+    "011": "J / PS Fem 10-12",
+}
+
 
 def _zimmer_persona(cat: str, comp: str) -> Dict[str, Optional[str]]:
     m = _PERSONA_RE.match(cat)
@@ -145,12 +162,22 @@ def _zimmer_persona(cat: str, comp: str) -> Dict[str, Optional[str]]:
         )
 
     if comp == "insert":
-        lat, stab_code = grp1[0], grp1[2]
+        # grp1 = [laterality][vivacit_flag][stability_code]
+        lat, vivacit_flag, stab_code = grp1[0], grp1[1], grp1[2]
+        # vivacit_flag == '2' → Vivacit-E Highly Cross-Linked poly
+        if vivacit_flag == "2":
+            poly_material = "HXLPE+VitE"
+            antioxidant = "Vitamin E"
+        else:
+            poly_material = None
+            antioxidant = None
         return _result(
-            size=_PERSONA_TIB_SIZE.get(grp2),  # tibial size compatibility
+            size=_PERSONA_INS_COMPAT.get(grp2),  # tibia/femoral size compatibility
             side="Left" if lat == "1" else "Right" if lat == "2" else None,
             thickness=str(int(grp3)),  # strip leading zero
             stability=_PERSONA_INS_STAB.get(stab_code),
+            poly_material=poly_material,
+            antioxidant=antioxidant,
         )
 
     return _result()
@@ -322,7 +349,7 @@ def _microport(cat: str, comp: str) -> Dict[str, Optional[str]]:
 
 
 # ===========================================================================
-# DePuy – ATTUNE
+# DePuy – ATTUNE (hyphenated format, legacy)
 # ===========================================================================
 # Tibia:   1506-XX-00S   → size = last digit of last group
 # Femoral: 1504-XX-XYZ   → Z = size, Y = side (1=L, 2=R)
@@ -354,7 +381,7 @@ def _depuy_attune(cat: str, comp: str) -> Dict[str, Optional[str]]:
 
 
 # ===========================================================================
-# DePuy – Sigma (non-PFC)
+# DePuy – Sigma (non-PFC, hyphenated)
 # ===========================================================================
 # Tibia:   1581-XX-X[size]XX   → 5th digit (1-indexed) of digit-only string = size
 # Femoral: 940XYZ              → Z = size, Y = side (1=L, 2=R); starts with 940
@@ -378,7 +405,7 @@ def _depuy_sigma(cat: str, comp: str) -> Dict[str, Optional[str]]:
 
 
 # ===========================================================================
-# DePuy – PFC Sigma / Nexgen PFC
+# DePuy – PFC Sigma / NexGen PFC (hyphenated)
 # ===========================================================================
 # Tibia:   1294-XX-XSX   → second-last digit of last group = size
 # Femoral: 9600XX        → last 2 digits look up size + side from table
@@ -417,6 +444,219 @@ def _depuy_pfc_sigma(cat: str, comp: str) -> Dict[str, Optional[str]]:
             if entry:
                 return _result(size=entry[0], side=entry[1])
 
+    return _result()
+
+
+# ===========================================================================
+# DePuy – ATTUNE Femoral 9-digit (unhyphenated)
+# ===========================================================================
+# Format: [prefix6][NNN]
+#   150400NNN = CR,           150401NNN = Cementless,  150410NNN = PS
+# NNN encoding: [series][last2]
+#   series 1: last2 02-10 → Size 2-10;  23-26 → Size 3N-6N
+#   series 2: last2 01-10 → Size 1-10;  23-26 → Size 3N-6N
+
+_ATTUNE_FEM9_PREFIXES = {"150400", "150401", "150410"}
+
+
+def _depuy_attune_femoral9(cat: str) -> Dict[str, Optional[str]]:
+    if len(cat) != 9 or cat[:6] not in _ATTUNE_FEM9_PREFIXES:
+        return _result()
+    nnn = cat[6:]          # 3-digit suffix
+    series = nnn[0]        # "1" or "2"
+    n = int(nnn[1:])       # last 2 digits as int
+    if 23 <= n <= 26:
+        size = f"{n - 20}N"   # 23→3N, 24→4N, 25→5N, 26→6N
+    elif series in ("1", "2") and 1 <= n <= 10:
+        size = str(n)
+    else:
+        size = None
+    return _result(size=size)
+
+
+# ===========================================================================
+# DePuy – ATTUNE Tibial 9-digit (unhyphenated)
+# ===========================================================================
+# Format: 1506XXXXX  (9 digits)
+# Size = int(last 2 digits); applies to all ATTUNE tibial variants:
+#   15064X = standard,  15066X = wide,  15067X / 15068X = Attune S+,
+#   150611 = Attune Cementless
+
+def _depuy_attune_tibial9(cat: str) -> Dict[str, Optional[str]]:
+    if len(cat) != 9 or not cat.startswith("1506"):
+        return _result()
+    size = int(cat[-2:])
+    return _result(size=str(size) if size else None)
+
+
+# ===========================================================================
+# DePuy – PFC Sigma Tibial 9-digit (unhyphenated)
+# ===========================================================================
+# Format: 1581XXXXX  (9 digits)
+# Size code = cat[4:6]:  20→2, 25→2.5, 30→3, 40→4, 50→5, 60→6
+
+_PFC_TIB9_SIZE = {
+    "20": "2", "25": "2.5", "30": "3",
+    "40": "4", "50": "5", "60": "6",
+}
+
+
+def _depuy_pfc_sigma_tibial9(cat: str) -> Dict[str, Optional[str]]:
+    if len(cat) != 9 or not cat.startswith("1581"):
+        return _result()
+    return _result(size=_PFC_TIB9_SIZE.get(cat[4:6]))
+
+
+# ===========================================================================
+# DePuy – PFC Sigma Tibial 6-digit (860NNN / 866NNN)
+# ===========================================================================
+# Size = last digit of catalogue number
+
+_PFC_TIB_SHORT_RE = re.compile(r"^8(?:60|66)\d{3}$")
+
+
+def _depuy_pfc_sigma_tibial_short(cat: str) -> Dict[str, Optional[str]]:
+    if not _PFC_TIB_SHORT_RE.match(cat):
+        return _result()
+    return _result(size=cat[-1])
+
+
+# ===========================================================================
+# DePuy – ATTUNE / PFC Insert 9-digit (unhyphenated)
+# ===========================================================================
+# Format: 1516XXXXX or 1517XXXXX  (9 digits)
+# Size = int(cat[5:7]):  "01"→1, "02"→2, … "10"→10
+
+def _depuy_attune_insert9(cat: str) -> Dict[str, Optional[str]]:
+    if len(cat) != 9 or cat[:4] not in ("1516", "1517"):
+        return _result()
+    size = int(cat[5:7])
+    return _result(size=str(size) if size else None)
+
+
+# ===========================================================================
+# DePuy – ATTUNE Patella 9-digit (unhyphenated)
+# ===========================================================================
+# Format: 1518[12]XXXX  (9 digits)
+# Size = int(last 3 digits) in mm  (e.g. 029→29, 041→41)
+
+def _depuy_attune_patella9(cat: str) -> Dict[str, Optional[str]]:
+    if len(cat) != 9 or cat[:4] != "1518" or cat[4] not in "12":
+        return _result()
+    size = int(cat[-3:])
+    return _result(size=str(size) if size else None)
+
+
+# ===========================================================================
+# DePuy – LCS Femoral 9-digit (unhyphenated)
+# ===========================================================================
+# Format: 12940XNNN (CR), 12941XNNN (PS), 12942XNNN (FS)
+# Size label = last 2 digits:
+#   20→Small  30→Medium  40→Standard  50→Standard+  60→Large  70→Large+
+
+_LCS_SIZE = {
+    "20": "Small",  "30": "Medium",   "40": "Standard",
+    "50": "Standard+", "60": "Large", "70": "Large+",
+}
+
+
+def _depuy_lcs_femoral9(cat: str) -> Dict[str, Optional[str]]:
+    if len(cat) != 9 or cat[:5] not in ("12940", "12941", "12942"):
+        return _result()
+    return _result(size=_LCS_SIZE.get(cat[-2:]))
+
+
+# ===========================================================================
+# DePuy – MBT Tibial Baseplate 9-digit (unhyphenated)
+# ===========================================================================
+# Format: 12943XNNN  (9 digits)
+# Size = last 2 digits mapped through _MBT_LAST2_SIZE:
+#   15→1.5  20→2  25→2.5  30→3  40→4  50→5  60→6  70→7
+
+_MBT_LAST2_SIZE = {
+    "15": "1.5", "20": "2", "25": "2.5", "30": "3",
+    "40": "4",  "50": "5", "60": "6",  "70": "7",
+}
+
+
+def _depuy_mbt_tibial9(cat: str) -> Dict[str, Optional[str]]:
+    if len(cat) != 9 or not cat.startswith("12943"):
+        return _result()
+    return _result(size=_MBT_LAST2_SIZE.get(cat[-2:]))
+
+
+# ===========================================================================
+# DePuy – PFC Sigma Insert 6-digit (962XXX / 9704XX)
+# ===========================================================================
+# Format: 962[series][tens][units]
+#   General rule: size = tens digit
+#   Series 1, tens=2 (last2=="21"): size = "2.5"
+#   Series 3, tens=2 (last2=="21"): size = "2"
+#   Series 3, tens>=4:              size = tens - 1  (offset by -1)
+# 9704XX → size 2
+
+_PFC_INS6_RE = re.compile(r"^962(\d)(\d)(\d)$")
+
+
+def _depuy_pfc_sigma_insert6(cat: str) -> Dict[str, Optional[str]]:
+    m = _PFC_INS6_RE.match(cat)
+    if m:
+        series = m.group(1)
+        tens = m.group(2)
+        units = m.group(3)
+        last2 = tens + units
+        if last2 == "21":
+            return _result(size="2.5" if series == "1" else "2")
+        n = int(tens)
+        if series == "3" and n >= 4:
+            size = str(n - 1)
+        elif n == 0:
+            size = None
+        else:
+            size = str(n)
+        return _result(size=size)
+    if re.match(r"^9704\d{2}$", cat):
+        return _result(size="2")
+    return _result()
+
+
+# ===========================================================================
+# DePuy – unified 9-digit / 6-digit router
+# ===========================================================================
+
+def _depuy_route9(cat: str, comp: str) -> Dict[str, Optional[str]]:
+    """Route 9-digit unhyphenated DePuy catalogue numbers."""
+    p6 = cat[:6]
+    p5 = cat[:5]
+    p4 = cat[:4]
+
+    if p6 in _ATTUNE_FEM9_PREFIXES:
+        return _depuy_attune_femoral9(cat)
+    if p4 == "1506":
+        return _depuy_attune_tibial9(cat)
+    if p4 == "1581":
+        return _depuy_pfc_sigma_tibial9(cat)
+    if p4 in ("1516", "1517"):
+        return _depuy_attune_insert9(cat)
+    if p4 == "1518" and cat[4] in "12":
+        return _depuy_attune_patella9(cat)
+    if p5 in ("12940", "12941", "12942") and comp == "femoral":
+        return _depuy_lcs_femoral9(cat)
+    if p5 == "12943" and comp == "tibial":
+        return _depuy_mbt_tibial9(cat)
+    if cat == "148807000":           # AMK femoral size 4
+        return _result(size="4")
+    return _result()
+
+
+def _depuy_route6(cat: str, comp: str) -> Dict[str, Optional[str]]:
+    """Route 6-digit unhyphenated DePuy catalogue numbers."""
+    if cat.startswith("962"):
+        return _depuy_pfc_sigma_insert6(cat)
+    if cat[:3] in ("860", "866"):
+        return _depuy_pfc_sigma_tibial_short(cat)
+    if cat.startswith("9704"):
+        return _result(size="2")
     return _result()
 
 
@@ -492,13 +732,26 @@ def extract_from_catalogue(
 
         # ---- DePuy / Johnson / Finsbury ----
         if any(k in mfr for k in ("depuy", "johnson", "j & j", "j&j", "finsbury")):
+            cat_stripped = cat.replace("-", "")
+            # Try 9-digit patterns on hyphen-stripped form (covers both
+            # 9-digit raw and hyphenated forms like 1504-00-101)
+            if len(cat_stripped) == 9 and cat_stripped.isdigit():
+                r = _depuy_route9(cat_stripped, comp)
+                if any(r.values()):
+                    return r
+            # Try 6-digit unhyphenated patterns
+            if len(cat_stripped) == 6 and cat_stripped.isdigit():
+                r = _depuy_route6(cat_stripped, comp)
+                if any(r.values()):
+                    return r
+            # Hyphenated / branded patterns
             if "attune" in brand:
                 return _depuy_attune(cat, comp)
             if "pfc" in brand or ("sigma" in brand and "pfc" in brand):
                 return _depuy_pfc_sigma(cat, comp)
             if "sigma" in brand:
                 return _depuy_sigma(cat, comp)
-            # Fallback: try all DePuy patterns
+            # Fallback: try all hyphenated DePuy patterns
             for fn in (_depuy_attune, _depuy_sigma, _depuy_pfc_sigma):
                 r = fn(cat, comp)
                 if any(r.values()):

@@ -160,6 +160,10 @@ EXCLUDE_KEYWORDS = [
     "cut block",
     "valve",
     "antibacterial",
+    "gloves",
+    "cone",
+    "wedge",
+    "bolt",
 ]
 
 BASE_URL = "https://health-products.canada.ca/api/medical-devices"

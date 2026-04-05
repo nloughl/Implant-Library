@@ -77,34 +77,51 @@ def _parse_response(data: dict) -> Tuple[str, str]:
     Extract (device_description, sizes_text) from a GUDID API response.
 
     Handles both the v3 envelope structure and bare device dicts.
-    Returns ('', '') on any parsing failure.
+    Each field is parsed independently so a failure in one does not
+    wipe out a successfully-parsed other field.
     """
+    # Unwrap v3 envelope: {"gudid": {"device": {...}}}
     try:
-        # v3 envelope: {"gudid": {"device": {...}}}
-        if "gudid" in data:
-            device = data["gudid"].get("device", {})
-        else:
-            device = data
+        device = data["gudid"]["device"] if "gudid" in data else data
+    except Exception:
+        return "", ""
 
+    # Description — parsed independently
+    try:
         description = str(device.get("deviceDescription") or "").strip()
+    except Exception:
+        description = ""
 
-        # deviceSizes is a list of {"sizeType": ..., "sizeText": ..., "sizeUnit": ...}
-        sizes = device.get("deviceSizes") or []
+    # Sizes — parsed independently so an exception here doesn't lose description.
+    # Actual API structure:
+    #   "deviceSizes": {"deviceSize": [{"sizeType": ..., "sizeText": ...,
+    #                                   "size": {"unit": ..., "value": ...}}, ...]}
+    sizes_text = ""
+    try:
+        sizes_wrapper = device.get("deviceSizes") or {}
+        size_list = sizes_wrapper if isinstance(sizes_wrapper, list) else (
+            sizes_wrapper.get("deviceSize") or []
+        )
         size_parts = []
-        for s in sizes:
+        for s in size_list:
             stype = s.get("sizeType", "")
             stext = s.get("sizeText", "")
-            sunit = s.get("sizeUnit", "")
-            part = f"{stype}: {stext}{' ' + sunit if sunit else ''}".strip(": ")
+            nested = s.get("size") or {}
+            sval = nested.get("value", "")
+            sunit = nested.get("unit", "")
+            if stext:
+                part = f"{stype}: {stext}".strip(": ")
+            elif sval:
+                part = f"{stype}: {sval}{' ' + sunit if sunit else ''}".strip(": ")
+            else:
+                part = ""
             if part:
                 size_parts.append(part)
         sizes_text = " | ".join(size_parts)
-
-        return description, sizes_text
-
     except Exception as exc:
-        logger.debug("Response parse error: %s", exc)
-        return "", ""
+        logger.debug("deviceSizes parse error: %s", exc)
+
+    return description, sizes_text
 
 
 # ---------------------------------------------------------------------------
