@@ -197,6 +197,12 @@ def merge(gudid: pd.DataFrame, mdall: pd.DataFrame) -> pd.DataFrame:
 
     combined = pd.concat(all_frames, ignore_index=True)
 
+    # MDALL stores the catalogue number in DEVICE_ID (not a real GUDID DI).
+    # Clear it for MDALL-only rows so the description enricher doesn't try to
+    # look up catalogue numbers as GUDID device identifiers.
+    if 'DEVICE_ID' in combined.columns:
+        combined.loc[combined['SOURCE'] == 'MDALL_ONLY', 'DEVICE_ID'] = ''
+
     # ---- drop internal work columns ----------------------------------------
     drop_cols = [c for c in combined.columns
                  if c.startswith('_cat') or c in ('VERSION_MODEL_NUMBER_GUDID',

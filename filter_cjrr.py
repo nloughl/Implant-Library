@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -90,6 +91,48 @@ PARTIAL_KNEE_PATTERNS: list[str] = [
     r'repicci',
 ]
 
+# ---------------------------------------------------------------------------
+# Brand-name exclusion pattern
+# Applied to BRAND_NAME + MDALL_BRAND_NAME (case-insensitive).
+# Catches devices that slip through the GMDN filter because their GMDN term is
+# valid but their product name is clearly non-knee or non-implant.
+# ---------------------------------------------------------------------------
+
+BRAND_NAME_EXCLUSION_PATTERN = re.compile(
+    # Knee-adjacent non-implant orthopaedic items
+    r"\baugment\w*\b"                                   # augment, augmentation
+    r"|\bprovisional\b"                                 # provisional sizing components
+    r"|\bsizing\s+trial\b"                              # "sizing trial" phrase
+    r"|\btrial\s+(?:insert|component|femor|tibial)\b"   # trial insert / component
+    r"|\binstrument(?:ation|s)?\b"                      # instrumentation / instruments
+    # Completely unrelated medical device categories
+    r"|\bcatheter\b"
+    r"|\belectrode\b"
+    r"|\bhearing\s+(?:aid|system)\b"
+    r"|\bdefibrillator\b"
+    r"|\bpacemaker\b"
+    r"|\bcardioplegia\b"
+    r"|\becg\b|\beeg\b"
+    r"|\bmicrowave\b"
+    r"|\btransmitter\b"
+    r"|\bgloves?\b"
+    r"|\btoothbrush\b"
+    r"|\bdental\b"
+    r"|\bneedle\b"
+    r"|\bsheath\b"
+    r"|\bvalve\b"
+    r"|\bcanul[ae]\b"
+    r"|\bipg\b"             # implantable pulse generator (cardiac)
+    r"|\bpmr\b"             # unrelated to knee (physical medicine/radio)
+    r"|\baudio\s+cable\b"
+    r"|\bjig\b"             # cutting jig = instrument
+    r"|\bmri\b"
+    r"|\bcement\s+spacer\b"
+    # spacer but NOT "tibial spacer" (tibial spacers are revision knee components)
+    r"|\bspacer\b(?!.*\btibial\b)",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Core filter functions
@@ -121,9 +164,14 @@ def assign_cjrr_manufacturer(company: str) -> str:
     return ''
 
 
+def is_irrelevant_by_brand(brand: str, mdall_brand: str) -> bool:
+    """Return True if either brand name matches a non-implant exclusion pattern."""
+    combined = f"{brand} {mdall_brand}"
+    return bool(BRAND_NAME_EXCLUSION_PATTERN.search(combined))
+
+
 def is_partial_knee(brand: str, gmdn: str) -> bool:
     """Return True if the device appears to be a partial/unicompartmental knee."""
-    import re
     text = f'{brand} {gmdn}'.lower()
     for pattern in PARTIAL_KNEE_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE):
@@ -166,7 +214,20 @@ def filter_cjrr(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f'\nPartial knee exclusion: {n_after_mfr:,} -> {n_after_partial:,} rows '
                 f'({n_after_mfr - n_after_partial:,} removed)')
 
-    return df_filtered
+    # 4. Exclude irrelevant devices by brand name / mdall brand name
+    brand_mask = df_filtered.apply(
+        lambda r: is_irrelevant_by_brand(
+            r.get('BRAND_NAME', ''),
+            r.get('MDALL_BRAND_NAME', ''),
+        ),
+        axis=1,
+    )
+    df_brand_filtered = df_filtered[~brand_mask].copy()
+    n_after_brand = len(df_brand_filtered)
+    logger.info(f'\nBrand-name exclusion: {n_after_partial:,} -> {n_after_brand:,} rows '
+                f'({n_after_partial - n_after_brand:,} removed)')
+
+    return df_brand_filtered
 
 
 def print_summary(original: pd.DataFrame, filtered: pd.DataFrame) -> None:

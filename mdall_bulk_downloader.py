@@ -316,7 +316,6 @@ class MDALLBulkDownloader:
                     for ident in identifiers:
                         rows.append(
                             {
-                                "DEVICE_ID": ident,
                                 "VERSION_MODEL_NUMBER": ident,
                                 **base_row,
                             }
@@ -325,7 +324,6 @@ class MDALLBulkDownloader:
                     # No catalogue number found — include device with blank
                     rows.append(
                         {
-                            "DEVICE_ID": "",
                             "VERSION_MODEL_NUMBER": "",
                             **base_row,
                         }
@@ -333,7 +331,6 @@ class MDALLBulkDownloader:
             else:
                 rows.append(
                     {
-                        "DEVICE_ID": str(device_id) if device_id else "",
                         "VERSION_MODEL_NUMBER": "",
                         **base_row,
                     }

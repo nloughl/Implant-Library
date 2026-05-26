@@ -45,6 +45,8 @@ import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
+from openpyxl import load_workbook
+from openpyxl.styles.numbers import FORMAT_TEXT
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -85,14 +87,29 @@ logger = logging.getLogger(__name__)
 # Fields where we coalesce: take the first non-empty value across all rows
 # that share a catalogue_num (secondary rows may fill gaps in the primary).
 _COALESCE_FIELDS = [
-    "component_type", "component_description",
-    "stability", "bearing_type", "fixation",
-    "metal_material", "poly_material", "antioxidant",
-    "ceramic_material", "surface_treatment",
-    "side", "size", "thickness", "ap_length", "ml_width", "diameter",
-    "design_articular_surface", "design_fixation_surface",
-    "device_description", "device_sizes_text",
-    "brand_name", "mdall_brand_name", "gmdn_name",
+    "component_type",
+    "component_description",
+    "stability",
+    "bearing_type",
+    "fixation",
+    "metal_material",
+    "poly_material",
+    "antioxidant",
+    "ceramic_material",
+    "surface_treatment",
+    "side",
+    "size",
+    "thickness",
+    "ap_length",
+    "ml_width",
+    "diameter",
+    "design_articular_surface",
+    "design_fixation_surface",
+    "device_description",
+    "device_sizes_text",
+    "brand_name",
+    "mdall_brand_name",
+    "gmdn_name",
     "notes",
 ]
 
@@ -193,7 +210,7 @@ class ImplantRecord:
     metal_material: Optional[str] = None
     poly_material: Optional[str] = None
     ceramic_material: Optional[str] = None
-    antioxidant: Optional[str] = None           # e.g. "Vitamin E" (Vivacit-E, etc.)
+    antioxidant: Optional[str] = None  # e.g. "Vitamin E" (Vivacit-E, etc.)
     material_standard: Optional[str] = None
 
     # --- Dimensions ---------------------------------------------------------
@@ -206,7 +223,9 @@ class ImplantRecord:
     # --- Design features ----------------------------------------------------
     design_articular_surface: Optional[str] = None
     design_fixation_surface: Optional[str] = None
-    surface_treatment: Optional[str] = None        # fixation-surface coating: HA, PMMA, TiN, TPS, CaP …
+    surface_treatment: Optional[str] = (
+        None  # fixation-surface coating: HA, PMMA, TiN, TPS, CaP …
+    )
 
     # --- Source tracing -----------------------------------------------------
     data_source: List[str] = field(default_factory=list)
@@ -222,7 +241,7 @@ class ImplantRecord:
 
 
 # ===========================================================================
-# Utility / enrichment classes (kept from v2, minimal changes)
+# Utility / enrichment classes
 # ===========================================================================
 
 
@@ -230,37 +249,54 @@ class ComponentTypeClassifier:
     """Classifies implant component type from GMDN terms and product name."""
 
     @staticmethod
-    def classify(gmdn_name: str = "") -> Optional[str]:
-        text = gmdn_name.lower()
+    def _classify_text(text: str) -> Optional[str]:
+        t = text.lower()
 
-        if "hip" in text:
+        if "hip" in t:
             return "Hip Prosthesis"
 
-        if any(w in text for w in ["stem", "extension stem"]):
-            if "femoral" in text or "femur" in text:
+        if re.search(r"\bstems?\b", t) or "extension stem" in t:
+            if "femoral" in t or "femur" in t:
                 return "Femoral Stem"
-            if "tibial" in text or "tibia" in text:
+            if "tibial" in t or "tibia" in t:
                 return "Tibial Stem"
             return "Stem"
 
-        if any(w in text for w in ["insert", "bearing", "articular surface", "liner"]):
+        if any(w in t for w in ["insert", "bearing", "articular surface", "liner"]):
             return "Insert"
 
-        if any(w in text for w in ["patellar", "patella", "patello"]):
+        if any(w in t for w in ["patellar", "patella", "patello"]):
             return "Patellar"
 
-        if any(w in text for w in ["tibial", "tibia"]) and "insert" not in text:
-            if any(w in text for w in ["baseplate", "tray", "platform", "component"]):
+        if any(w in t for w in ["tibial", "tibia"]) and "insert" not in t:
+            if any(w in t for w in ["baseplate", "tray", "platform", "component"]):
                 return "Tibial"
 
-        if any(w in text for w in ["femoral", "femur"]) and "stem" not in text:
-            if any(w in text for w in ["component", "condyle"]):
+        if any(w in t for w in ["femoral", "femur"]) and not re.search(
+            r"\bstems?\b", t
+        ):
+            if any(w in t for w in ["component", "condyle"]):
                 return "Femoral"
 
-        if "femorotibial" in text or ("femoral" in text and "tibial" in text):
+        if "femorotibial" in t or ("femoral" in t and "tibial" in t):
             return "TKA System"
 
         return None
+
+    @staticmethod
+    def classify(gmdn_name: str = "", device_description: str = "") -> Optional[str]:
+        """Classify component type, checking device_description before gmdn_name.
+
+        device_description is per-device free text (e.g. "Articulating surface,
+        vitamin E highly crosslinked UHMWPE, fixed bearing UC") and is more
+        specific than the GMDN category label.  gmdn_name is used as fallback
+        when device_description is absent or unclassifiable.
+        """
+        if device_description:
+            result = ComponentTypeClassifier._classify_text(device_description)
+            if result is not None:
+                return result
+        return ComponentTypeClassifier._classify_text(gmdn_name)
 
 
 class FieldExtractor:
@@ -268,7 +304,7 @@ class FieldExtractor:
 
     @staticmethod
     def extract_fixation(text: str) -> Optional[str]:
-        if re.search(r"\bcement(?:ed)?\b", text, re.I):
+        if re.search(r"\bcement(?:ed)?\b|\bnonporous\b", text, re.I):
             return "Cemented"
         if re.search(r"\bcementless\b|\buncemented\b|\bporous\b", text, re.I):
             return "Cementless"
@@ -278,16 +314,38 @@ class FieldExtractor:
 
     @staticmethod
     def extract_stability(text: str) -> Optional[str]:
-        if re.search(r"\bsemi[- ]constrain(?:ed)?\b", text, re.I):
+        if re.search(r"\bsemi[- ]constrain(?:ed)?\b|\bSC\b", text, re.I):
             return "Semi-Constrained"
-        if re.search(r"\bPS\b|\bposterior[- ]stabili[sz]ed\b", text, re.I):
+        if re.search(
+            r"\bPS\b|\bposterior[- ]stabili[sz]ed\b|\bpost stab\b|\bPSR\b|\bP/S\b|\bposterior[- ]sabili[sz]ed\b",
+            text,
+            re.I,
+        ):
             return "PS"
+        if re.search(r"\bAS\b|\banterior[- ]stabili[sz]ed?\b", text, re.I):
+            return "AS"
         if re.search(r"\bCR\b|\bcruciate[- ]retain(?:ing)?\b", text, re.I):
             return "CR"
+        if re.search(
+            r"\bmedial\s+pivot\b|\bGMK Sphere\b|\bmedial dished\b|\bMP\b", text, re.I
+        ):
+            return "Medial Pivot"
         if re.search(r"\bCPS\b", text, re.I):
             return "CPS"
         if re.search(r"\bBCS\b|\bbi[- ]cruciate\b", text, re.I):
             return "BCS"
+        if re.search(r"\bCS LIPPED\b|\bCS\b", text, re.I):
+            return "CS"
+        if re.search(r"\bCCK\b|\bLCCK\b|\bconstrained condylar\b", text, re.I):
+            return "CCK"
+        if re.search(r"\bTS\b|\btotal stabilizer\b", text, re.I):
+            return "TS"
+        if re.search(r"\bUC\b|\bdeep[- ]dish\b", text, re.I):
+            return "UC"
+        if re.search(r"\brotating hinge\b", text, re.I):
+            return "Rotating Hinge"
+        if re.search(r"\bhinge\b|\bhinged\b", text, re.I):
+            return "Hinge"
         if re.search(r"\bconstrain(?:ed)?\b", text, re.I):
             return "Constrained"
         return None
@@ -296,8 +354,6 @@ class FieldExtractor:
     def extract_bearing_type(text: str) -> Optional[str]:
         if re.search(r"\brotating\s+platform\b", text, re.I):
             return "Rotating Platform"
-        if re.search(r"\bmedial\s+pivot\b", text, re.I):
-            return "Medial Pivot"
         if re.search(r"\bmobile\s+bearing\b|\bmobile\b|\brotating\b", text, re.I):
             return "Mobile Bearing"
         if re.search(r"\bfixed\s+bearing\b|\bfixed\b", text, re.I):
@@ -306,6 +362,14 @@ class FieldExtractor:
 
     @staticmethod
     def extract_side(text: str) -> Optional[str]:
+        # Medacta tibial hash notation: "#6/12 mm R" — R/L follows the mm value
+        m = re.search(r"#\d+/\d+\s*mm\s+([LR])\b", text, re.I)
+        if m:
+            return "Right" if m.group(1).upper() == "R" else "Left"
+        # Medacta femoral suffix: "S1R" / "S2L" — size digit + side letter
+        m = re.search(r"\bS\d+([LR])\b", text)
+        if m:
+            return "Right" if m.group(1).upper() == "R" else "Left"
         if re.search(r"\bleft\b", text, re.I):
             return "Left"
         if re.search(r"\bright\b", text, re.I):
@@ -336,16 +400,20 @@ class FieldExtractor:
 
         polymer = None
         antioxidant = None
-        if "uhmwpe" in t or "polyethylene" in t:
-            is_hxlpe = bool(
-                re.search(r"highly\s+cross.?link(?:ed)?|hxlpe", t)
-            )
-            is_xlpe = is_hxlpe or bool(
-                re.search(r"xlpe|cross.?link(?:ed)?", t)
-            )
-            is_vite = bool(
-                re.search(r"vitamin\s*e\b|vit\.?\s*e\b|vivacit", t)
-            )
+        # E-Cross: Medacta brand name for Vitamin E highly cross-linked PE
+        if re.search(r"\be[-.]?cross\b", t):
+            polymer = "HXLPE+VitE"
+            antioxidant = "Vitamin E"
+        elif (
+            "uhmwpe" in t
+            or "polyethylene" in t
+            or "standard pe" in t
+            or "xlpe" in t
+            or bool(re.search(r"\bx3\b", t))
+        ):
+            is_hxlpe = bool(re.search(r"highly\s+cross.?link(?:ed)?|hxlpe|x3", t))
+            is_xlpe = is_hxlpe or bool(re.search(r"xlpe|cross.?link(?:ed)?", t))
+            is_vite = bool(re.search(r"vitamin\s*e\b|vit\.?\s*e\b|vivacit", t))
 
             if is_hxlpe and is_vite:
                 polymer = "HXLPE+VitE"
@@ -376,28 +444,212 @@ class FieldExtractor:
         t = text.lower()
         # Hydroxyapatite — including Peri-Apatite (Stryker) and plain "HA"
         if re.search(
-            r'hydroxyapatite|peri.?apatite|\bha\s+coat|\bha\b.*coat|coat.*\bha\b',
+            r"hydroxyapatite|peri.?apatite|\bha\s+coat|\bha\b.*coat|coat.*\bha\b|\+\s*ha\b",
             t,
         ):
-            return 'HA'
+            return "HA"
+        # Titanium niobium nitride (must precede TiN check — more specific)
+        if re.search(r"\btinbn\b|tinbn|titanium\s+niobium\s+nitride", t):
+            return "TiNbN"
         # Titanium nitride
-        if re.search(r'\btin\b|titanium\s+nitride', t):
-            return 'TiN'
+        if re.search(r"\btin\b|titanium\s+nitride", t):
+            return "TiN"
         # Titanium plasma spray
-        if re.search(r'\btps\b|titanium\s+plasma\s+spray|plasma\s+spray', t):
-            return 'TPS'
+        if re.search(r"\btps\b|titanium\s+plasma\s+spray|plasma\s+spray", t):
+            return "TPS"
         # Calcium phosphate / tricalcium phosphate
-        if re.search(r'calcium\s+phosphate|\bca\s*p\b|tricalcium', t):
-            return 'CaP'
+        if re.search(r"calcium\s+phosphate|\bca\s*p\b|tricalcium", t):
+            return "CaP"
         # PMMA / bone cement (cemented implants with pre-coat)
-        if re.search(r'\bpmma\b|polymethylmethacrylate', t):
-            return 'PMMA'
+        if re.search(r"\bpmma\b|polymethylmethacrylate", t):
+            return "PMMA"
         return None
+
+    # Written-size normalisation — shared by extract_size patterns 2 & 3.
+    # Longer forms must appear before their abbreviations in _W so that the
+    # regex alternation doesn't short-circuit (e.g. "SMALL" before "SM").
+    _W = r"(?:EXTRA\s+)?(?:SMALL|SML|SM|MEDIUM|MED|STANDARD|STD|LARGE|LGE|LG|XL)\+?(?:\s*/\s*(?:EXTRA\s+)?(?:SMALL|SML|SM|MEDIUM|MED|STANDARD|STD|LARGE|LGE|LG|XL)\+?)?"
+    _WRITTEN_NORM: Dict[str, str] = {
+        "extra small": "XS",
+        "small": "Small",
+        "sml": "Small",
+        "sm": "Small",
+        "medium": "Medium",
+        "med": "Medium",
+        "standard+": "Standard+",
+        "std+": "Standard+",
+        "standard": "Standard",
+        "std": "Standard",
+        "extra large": "XL",
+        "large+": "Large+",
+        "lge+": "Large+",
+        "lg+": "Large+",
+        "large": "Large",
+        "lge": "Large",
+        "lg": "Large",
+        "xl": "XL",
+    }
+
+    @staticmethod
+    def _norm_written_size(s: str) -> str:
+        return FieldExtractor._WRITTEN_NORM.get(s.lower().strip(), s.title())
 
     @staticmethod
     def extract_size(text: str) -> Optional[str]:
-        m = re.search(r"size\s+(\d+(?:-\d+)?)", text, re.I)
-        return m.group(1) if m else None
+        # Priority 0a: hash notation — "#6" from "#6/12 mm" (Medacta) or "#3 Th10" (Corin)
+        m = re.search(r"#(\d+)", text)
+        if m:
+            return m.group(1)
+        # Priority 0b: Medacta femoral suffix "S1R" / "S2L" — size digit before side letter
+        m = re.search(r"\bS(\d+)[LR]\b", text)
+        if m:
+            return m.group(1)
+        # Priority 1: explicit "Size:" label — numeric ("Size: 13"), letter
+        # ("Size: D"), or alphanumeric ("Size: LGE-1"). Space excluded as
+        # separator to prevent "SIZE 7-8 10MM" from absorbing the thickness.
+        # Negative lookahead skips "Device Size Text, specify:" segments.
+        m = re.search(
+            r"(?:size|sz)\s*:?\s*(?!text\b|specify\b)([A-Z0-9]+(?:[-/][A-Z0-9]+)*)",
+            text,
+            re.I,
+        )
+        if m:
+            return m.group(1)
+        # Priority 2: parenthesised written size — "(SMALL)", "(LG+)", "(MEDIUM)"
+        m = re.search(rf"\(\s*({FieldExtractor._W})\s*\)", text, re.I)
+        if m:
+            return FieldExtractor._norm_written_size(m.group(1))
+        # Priority 3: written size immediately before a mm measurement
+        # e.g. "MENISCAL BEARING LG+ 12.5mm" — the written token is the size,
+        # the number+mm is the thickness (handled separately by extract_thickness).
+        m = re.search(
+            rf"\b({FieldExtractor._W})\s+\d+(?:\.\d+)?\s*(?:mm\b|millimeters?\b)",
+            text,
+            re.I,
+        )
+        if m:
+            return FieldExtractor._norm_written_size(m.group(1))
+        return None
+
+    @staticmethod
+    def extract_thickness(text: str) -> Optional[str]:
+        """Extract insert/component thickness from free text.
+
+        Checks in order:
+          0. Medacta "#6/12 mm" — second number after slash is thickness
+          0b. Corin "Th10" / "Th 10" label
+          1. Labelled form: "Thickness: 10 mm" or "Height: 10 Millimeter"
+          2. Numeric size label then bare mm: "SIZE 7-8 10MM" or "SIZE: 5-6 18MM"
+          3. Written size token then bare mm: "LG+ 12.5mm"
+        Returns the numeric part as a string (e.g. "10", "9.5").
+        Plain digit+mm is intentionally avoided to prevent AP/ML widths
+        (e.g. "Width: 60 mm") from being misidentified as thickness.
+        """
+        # Priority 0: Medacta "#6/12 mm" — second number is thickness
+        m = re.search(r"#\d+/(\d+(?:\.\d+)?)\s*(?:mm\b|millimeters?\b)", text, re.I)
+        if m:
+            return m.group(1)
+        # Priority 0b: Corin "Th10" or "Th 10" — Th prefix is thickness label
+        m = re.search(r"\bTh\s*(\d+(?:\.\d+)?)\b", text)
+        if m:
+            return m.group(1)
+        t = text.lower()
+        m = re.search(
+            r"(?:thickness|height)\s*:?\s*(\d+(?:\.\d+)?)\s*(?:mm\b|millimeters?\b)", t
+        )
+        if m:
+            return m.group(1)
+        m = re.search(
+            r"size\s*:?\s*\d+(?:[/-]\d+)?\s+(\d+(?:\.\d+)?)\s*(?:mm\b|millimeters?\b)",
+            t,
+        )
+        if m:
+            return m.group(1)
+        # Written size token immediately before a bare mm value
+        # e.g. "MENISCAL BEARING LG+ 12.5mm" — the number+mm is the thickness.
+        _w = r"(?:extra\s+)?(?:small|sml|sm|medium|med|standard|std|large|lge|lg|xl)\+?"
+        m = re.search(rf"\b{_w}\s+(\d+(?:\.\d+)?)\s*(?:mm\b|millimeters?\b)", t, re.I)
+        if m:
+            return m.group(1)
+        return None
+
+    @staticmethod
+    def extract_dimensions_from_sizes_text(
+        sizes_text: str,
+    ) -> Dict[str, Optional[float]]:
+        """Parse GUDID device_sizes_text pipe-separated key-value pairs.
+
+        Input format: "Width: 60 mm | Height: 9 mm | Length: 72 mm"
+        Returns a dict with keys: ap_length, ml_width, thickness, diameter
+        (float mm values, or None if the label was not found).
+        """
+        result: Dict[str, Optional[float]] = {
+            "ap_length": None,
+            "ml_width": None,
+            "thickness": None,
+            "diameter": None,
+        }
+        if not isinstance(sizes_text, str):
+            return result
+        _MAP = {
+            "ap_length": re.compile(r"\b(?:ap|length|anterior.posterior)\b", re.I),
+            "ml_width": re.compile(r"\b(?:ml|width|medial.lateral)\b", re.I),
+            "thickness": re.compile(r"\b(?:thickness|height)\b", re.I),
+            "diameter": re.compile(r"\b(?:diameter|diam)\b", re.I),
+        }
+        for segment in sizes_text.split("|"):
+            segment = segment.strip()
+            m_val = re.search(
+                r"(\d+(?:\.\d+)?)\s*(?:mm\b|millimeters?\b)", segment, re.I
+            )
+            if not m_val:
+                continue
+            val = float(m_val.group(1))
+            label = segment[: m_val.start()]
+            for field, pat in _MAP.items():
+                if pat.search(label) and result[field] is None:
+                    result[field] = val
+                    break
+        return result
+
+    @staticmethod
+    def extract_articular_surface(
+        text: str, side: Optional[str] = None
+    ) -> Optional[str]:
+        """Return "Asymmetric" or "Symmetric" from free text, or inferred from side.
+
+        Asymmetric is checked before symmetric to avoid a partial-match on
+        "asymmetric" returning "Symmetric".  Falls back to inferring from side
+        when no explicit keyword is present: Left/Right → Asymmetric,
+        Universal → Symmetric.
+        """
+        if re.search(r"\basymmetric(?:al)?\b", text, re.I):
+            return "Asymmetric"
+        if re.search(r"\bsymmetric(?:al)?\b", text, re.I):
+            return "Symmetric"
+        if side in ("Left", "Right"):
+            return "Asymmetric"
+        if side == "Universal":
+            return "Symmetric"
+        return None
+
+    @staticmethod
+    def extract_fixation_surface(text: str) -> Optional[str]:
+        """Return the primary fixation-surface feature keyword, or None.
+
+        Checked in specificity order so "stemmed, keeled" → "Stemmed".
+        Uses \\bstemmed\\b (not \\bstem\\b) to avoid false matches on
+        generic phrases like "TKA System" or "Femoral Stem component".
+        """
+        if re.search(r"\bstemmed\b", text, re.I):
+            return "Stemmed"
+        if re.search(r"\bkeel(?:ed)?\b", text, re.I):
+            return "Keeled"
+        if re.search(r"\bpeg(?:ged)?\b", text, re.I):
+            return "Pegged"
+        if re.search(r"\bscrew\b", text, re.I):
+            return "Screw"
+        return None
 
 
 class MDALLFormatter:
@@ -837,8 +1089,8 @@ class KneeImplantPipeline:
         if r.gmdn_name:
             metal, polymer, antioxidant = FieldExtractor.extract_material(r.gmdn_name)
             r.metal_material = metal
-            r.poly_material  = polymer
-            r.antioxidant    = antioxidant
+            r.poly_material = polymer
+            r.antioxidant = antioxidant
 
         notes_parts = []
         mri = row.get("MRI_SAFETY_STATUS", "")
@@ -1046,12 +1298,12 @@ class KneeImplantPipeline:
         # Surface treatment from eIFU material name
         # (PA = Peri-Apatite → HA; Hydroxyapatite → HA; TiN → TiN)
         if not record.surface_treatment and mat_name:
-            if re.search(r'hydroxyapatite|peri.?apatite', mat_name):
-                record.surface_treatment = 'HA'
-            elif re.search(r'\btin\b|titanium\s+nitride', mat_name):
-                record.surface_treatment = 'TiN'
-            elif re.search(r'titanium\s+plasma|plasma\s+spray|\btps\b', mat_name):
-                record.surface_treatment = 'TPS'
+            if re.search(r"hydroxyapatite|peri.?apatite", mat_name):
+                record.surface_treatment = "HA"
+            elif re.search(r"\btin\b|titanium\s+nitride", mat_name):
+                record.surface_treatment = "TiN"
+            elif re.search(r"titanium\s+plasma|plasma\s+spray|\btps\b", mat_name):
+                record.surface_treatment = "TPS"
 
         if "eIFU" not in record.data_source:
             record.data_source.append("eIFU")
@@ -1062,15 +1314,22 @@ class KneeImplantPipeline:
 
     def _enrich(self, record: ImplantRecord, eifu_lookup: Dict[str, Dict]) -> None:
         """Classify component type, extract design fields, enrich from eIFU."""
+        # Most-specific fields first so re.search() finds device-specific text
+        # before generic category labels.  device_name (FDA product-code
+        # description, e.g. "Knee Joint Femoral Component") and gmdn_name
+        # (GMDN category, e.g. "Semi-constrained knee prosthesis") are placed
+        # last because they describe the device class, not the specific implant.
         search_text = " ".join(
-            v for v in [
+            v
+            for v in [
                 record.device_description,
-                record.device_name,
-                record.brand_name,
+                record.device_sizes_text,  # GUDID size annotations: "Side: LEFT | Type: CR | Size: 13"
                 record.mdall_brand_name,
+                record.brand_name,
                 record.version_model_number,
-                record.gmdn_name,
                 record.notes,
+                record.device_name,
+                record.gmdn_name,
             ]
             if isinstance(v, str) and v
         )
@@ -1078,7 +1337,8 @@ class KneeImplantPipeline:
         # Component type
         if not record.component_type:
             record.component_type = ComponentTypeClassifier.classify(
-                record.gmdn_name or "",
+                gmdn_name=record.gmdn_name or "",
+                device_description=record.device_description or "",
             )
 
         # Design fields
@@ -1090,7 +1350,8 @@ class KneeImplantPipeline:
         # inserts regardless of actual CR/PS/CCK design.  Use only fields that
         # carry device-specific information.
         brand_text = " ".join(
-            v for v in [
+            v
+            for v in [
                 record.device_description,
                 record.mdall_brand_name,
                 record.brand_name,
@@ -1106,18 +1367,57 @@ class KneeImplantPipeline:
         if not record.bearing_type:
             record.bearing_type = FieldExtractor.extract_bearing_type(search_text)
         if not record.surface_treatment:
-            record.surface_treatment = FieldExtractor.extract_surface_treatment(search_text)
+            record.surface_treatment = FieldExtractor.extract_surface_treatment(
+                search_text
+            )
         if not record.side:
             record.side = FieldExtractor.extract_side(search_text)
+        if not record.design_articular_surface:
+            record.design_articular_surface = FieldExtractor.extract_articular_surface(
+                search_text, side=record.side
+            )
+        if not record.design_fixation_surface:
+            record.design_fixation_surface = FieldExtractor.extract_fixation_surface(
+                search_text
+            )
         if not record.size:
             record.size = FieldExtractor.extract_size(search_text)
+        if not record.thickness:
+            t_str = FieldExtractor.extract_thickness(search_text)
+            if t_str:
+                try:
+                    record.thickness = float(t_str)
+                except (ValueError, TypeError):
+                    pass
 
-        # Materials from text (only if not already set)
-        if not record.metal_material or not record.poly_material:
+        # Structured dimensions from device_sizes_text (GUDID API)
+        if isinstance(record.device_sizes_text, str) and record.device_sizes_text:
+            dims = FieldExtractor.extract_dimensions_from_sizes_text(
+                record.device_sizes_text
+            )
+            if not record.ap_length and dims["ap_length"]:
+                record.ap_length = dims["ap_length"]
+            if not record.ml_width and dims["ml_width"]:
+                record.ml_width = dims["ml_width"]
+            if not record.thickness and dims["thickness"]:
+                record.thickness = dims["thickness"]
+            if not record.diameter and dims["diameter"]:
+                record.diameter = dims["diameter"]
+
+        # Materials from text — re-run if any field is unset, or if poly_material is
+        # only the generic GMDN-level "UHMWPE" and device-specific text may carry a
+        # more specific crosslinked type (XLPE, HXLPE, HXLPE+VitE, etc.).
+        if (
+            not record.metal_material
+            or not record.poly_material
+            or record.poly_material == "UHMWPE"
+        ):
             metal, polymer, antioxidant = FieldExtractor.extract_material(search_text)
             if not record.metal_material:
                 record.metal_material = metal
-            if not record.poly_material:
+            if not record.poly_material or (
+                record.poly_material == "UHMWPE" and polymer and polymer != "UHMWPE"
+            ):
                 record.poly_material = polymer
             if not record.antioxidant:
                 record.antioxidant = antioxidant
@@ -1147,6 +1447,11 @@ class KneeImplantPipeline:
             record.poly_material = cat_fields["poly_material"]
         if not record.antioxidant and cat_fields.get("antioxidant"):
             record.antioxidant = cat_fields["antioxidant"]
+        if not record.diameter and cat_fields.get("diameter"):
+            try:
+                record.diameter = float(cat_fields["diameter"])
+            except (ValueError, TypeError):
+                pass
 
         # Confidence score: fraction of non-empty non-meta fields
         total = 0
@@ -1393,6 +1698,19 @@ class KneeImplantPipeline:
         main_out = self.output_dir / f"knee_implant_library_{ts}.csv"
         df.to_csv(main_out, index=False, encoding="utf-8")
         logger.info(f"\n[OK] Full library saved: {main_out}  ({len(df):,} records)")
+
+        # Excel export (human-readable, prevents date auto-conversion)
+        xlsx_out = self.output_dir / f"knee_implant_library_{ts}.xlsx"
+        df.to_excel(xlsx_out, index=False)
+
+        wb = load_workbook(xlsx_out)
+        ws = wb.active
+        col_letter = next(cell.column_letter for cell in ws[1] if cell.value == "size")
+        for cell in ws[col_letter][1:]:  # skip header
+            cell.number_format = FORMAT_TEXT
+            cell.value = str(cell.value)
+        wb.save(xlsx_out)
+        logger.info(f"[OK] Excel library saved: {xlsx_out}  ({len(df):,} records)")
 
         # Needs-review subset + detailed review report
         self._generate_review_report(df, ts)

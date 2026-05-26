@@ -46,6 +46,7 @@ _EMPTY: Dict[str, Optional[str]] = {
     "stability": None,
     "poly_material": None,
     "antioxidant": None,
+    "diameter": None,
 }
 
 
@@ -260,7 +261,7 @@ def _zimmer_nexgen(cat: str, comp: str) -> Dict[str, Optional[str]]:
 # ===========================================================================
 # Stryker
 # ===========================================================================
-# Format:  XXXX-[FGPB]-NNN
+# Format:  XXXX-[FGPBX]-NNN
 #   F = Femoral   B = Tibial   G = Insert (standard/CR)   P = Insert (PS)
 # NNN = [size][side_or_thickness_hi][side_or_thickness_lo]
 #   Femoral:  last 2 digits = 01 Left / 02 Right
@@ -273,6 +274,7 @@ _STRYKER_LETTER_COMP = {
     "B": "tibial",
     "G": "insert",
     "P": "insert",
+    "X": "insert",
 }
 
 
@@ -302,7 +304,7 @@ def _stryker(cat: str, comp: str) -> Dict[str, Optional[str]]:
     if letter == "B":
         return _result(size=size)
 
-    if letter in ("G", "P"):
+    if letter in ("G", "P", "X"):
         return _result(size=size, thickness=str(int(remainder)))  # strip leading zero
 
     return _result()
@@ -462,11 +464,11 @@ _ATTUNE_FEM9_PREFIXES = {"150400", "150401", "150410"}
 def _depuy_attune_femoral9(cat: str) -> Dict[str, Optional[str]]:
     if len(cat) != 9 or cat[:6] not in _ATTUNE_FEM9_PREFIXES:
         return _result()
-    nnn = cat[6:]          # 3-digit suffix
-    series = nnn[0]        # "1" or "2"
-    n = int(nnn[1:])       # last 2 digits as int
+    nnn = cat[6:]  # 3-digit suffix
+    series = nnn[0]  # "1" or "2"
+    n = int(nnn[1:])  # last 2 digits as int
     if 23 <= n <= 26:
-        size = f"{n - 20}N"   # 23→3N, 24→4N, 25→5N, 26→6N
+        size = f"{n - 20}N"  # 23→3N, 24→4N, 25→5N, 26→6N
     elif series in ("1", "2") and 1 <= n <= 10:
         size = str(n)
     else:
@@ -482,6 +484,7 @@ def _depuy_attune_femoral9(cat: str) -> Dict[str, Optional[str]]:
 #   15064X = standard,  15066X = wide,  15067X / 15068X = Attune S+,
 #   150611 = Attune Cementless
 
+
 def _depuy_attune_tibial9(cat: str) -> Dict[str, Optional[str]]:
     if len(cat) != 9 or not cat.startswith("1506"):
         return _result()
@@ -496,8 +499,12 @@ def _depuy_attune_tibial9(cat: str) -> Dict[str, Optional[str]]:
 # Size code = cat[4:6]:  20→2, 25→2.5, 30→3, 40→4, 50→5, 60→6
 
 _PFC_TIB9_SIZE = {
-    "20": "2", "25": "2.5", "30": "3",
-    "40": "4", "50": "5", "60": "6",
+    "20": "2",
+    "25": "2.5",
+    "30": "3",
+    "40": "4",
+    "50": "5",
+    "60": "6",
 }
 
 
@@ -527,6 +534,7 @@ def _depuy_pfc_sigma_tibial_short(cat: str) -> Dict[str, Optional[str]]:
 # Format: 1516XXXXX or 1517XXXXX  (9 digits)
 # Size = int(cat[5:7]):  "01"→1, "02"→2, … "10"→10
 
+
 def _depuy_attune_insert9(cat: str) -> Dict[str, Optional[str]]:
     if len(cat) != 9 or cat[:4] not in ("1516", "1517"):
         return _result()
@@ -539,6 +547,7 @@ def _depuy_attune_insert9(cat: str) -> Dict[str, Optional[str]]:
 # ===========================================================================
 # Format: 1518[12]XXXX  (9 digits)
 # Size = int(last 3 digits) in mm  (e.g. 029→29, 041→41)
+
 
 def _depuy_attune_patella9(cat: str) -> Dict[str, Optional[str]]:
     if len(cat) != 9 or cat[:4] != "1518" or cat[4] not in "12":
@@ -555,8 +564,12 @@ def _depuy_attune_patella9(cat: str) -> Dict[str, Optional[str]]:
 #   20→Small  30→Medium  40→Standard  50→Standard+  60→Large  70→Large+
 
 _LCS_SIZE = {
-    "20": "Small",  "30": "Medium",   "40": "Standard",
-    "50": "Standard+", "60": "Large", "70": "Large+",
+    "20": "Small",
+    "30": "Medium",
+    "40": "Standard",
+    "50": "Standard+",
+    "60": "Large",
+    "70": "Large+",
 }
 
 
@@ -574,8 +587,14 @@ def _depuy_lcs_femoral9(cat: str) -> Dict[str, Optional[str]]:
 #   15→1.5  20→2  25→2.5  30→3  40→4  50→5  60→6  70→7
 
 _MBT_LAST2_SIZE = {
-    "15": "1.5", "20": "2", "25": "2.5", "30": "3",
-    "40": "4",  "50": "5", "60": "6",  "70": "7",
+    "15": "1.5",
+    "20": "2",
+    "25": "2.5",
+    "30": "3",
+    "40": "4",
+    "50": "5",
+    "60": "6",
+    "70": "7",
 }
 
 
@@ -624,6 +643,7 @@ def _depuy_pfc_sigma_insert6(cat: str) -> Dict[str, Optional[str]]:
 # DePuy – unified 9-digit / 6-digit router
 # ===========================================================================
 
+
 def _depuy_route9(cat: str, comp: str) -> Dict[str, Optional[str]]:
     """Route 9-digit unhyphenated DePuy catalogue numbers."""
     p6 = cat[:6]
@@ -644,7 +664,7 @@ def _depuy_route9(cat: str, comp: str) -> Dict[str, Optional[str]]:
         return _depuy_lcs_femoral9(cat)
     if p5 == "12943" and comp == "tibial":
         return _depuy_mbt_tibial9(cat)
-    if cat == "148807000":           # AMK femoral size 4
+    if cat == "148807000":  # AMK femoral size 4
         return _result(size="4")
     return _result()
 
@@ -658,6 +678,139 @@ def _depuy_route6(cat: str, comp: str) -> Dict[str, Optional[str]]:
     if cat.startswith("9704"):
         return _result(size="2")
     return _result()
+
+
+# ===========================================================================
+# Link Orthopaedics
+# ===========================================================================
+# Format:  AAA-BBB/CC
+#   AAA = implant family prefix (any alphanumeric string, ignored)
+#   BBB = 3–4 digit component-type code
+#   CC  = 2-character size or dimension code (digits, or "X0" for size 10)
+#
+# Component class is determined solely from BBB (overrides component_type arg).
+# CC interpretation depends on the resolved component class:
+#   femoral / tibial     : size  (rules A–C)
+#   insert_* / tibial_all_poly : thickness in mm
+#   patella              : diameter in mm
+#   stem                 : dimension string (returned as diameter field)
+#
+# Size decoding (femoral / tibial only):
+#   A. CC ends in 0, CC != "X0" : size = int(CC) // 10   (/10→1, /50→5)
+#   B. CC == "X0"               : size = 10               (special: size 10)
+#   C. CC ends in 5             : size = (int(CC)//10)+"+" (/35→3+)
+#
+# Insert-CR size from BBB range (not CC):
+#   241–242 → "Size 1-2"   243–244 → "Size 3-4"   245–246 → "Size 5-6"   247 → "Size 7+"
+
+_LINK_RE = re.compile(r"^[A-Z0-9]+-(\d{3,4})/([A-Z0-9]{2})$", re.IGNORECASE)
+
+# Exact BBB → (comp_class, side, stability)
+_LINK_BBB_DIRECT = {
+    "010": ("femoral", "Right", "CR"),
+    "011": ("femoral", "Left", "CR"),
+    "030": ("femoral", "Right", "CCK"),
+    "031": ("femoral", "Left", "CCK"),
+    "040": ("tibial", None, None),  # monoblock
+    "050": ("tibial", None, None),  # modular
+    "090": ("tibial", None, None),  # monoblock
+    "100": ("tibial", None, None),  # modular
+    "511": ("patella", None, None),
+}
+
+_LINK_INSERT_CR_SIZE = {
+    241: "Size 1-2",
+    242: "Size 1-2",
+    243: "Size 3-4",
+    244: "Size 3-4",
+    245: "Size 5-6",
+    246: "Size 5-6",
+    247: "Size 7+",
+}
+
+
+def _link(cat: str) -> Dict[str, Optional[str]]:
+    m = _LINK_RE.match(cat)
+    if not m:
+        return _result()
+
+    bbb_str, cc = m.group(1), m.group(2).upper()
+
+    # -- Classify component from BBB --
+    if bbb_str in _LINK_BBB_DIRECT:
+        comp_class, side, stability = _LINK_BBB_DIRECT[bbb_str]
+    else:
+        try:
+            n = int(bbb_str)
+        except ValueError:
+            return _result()
+        if 241 <= n <= 247:
+            comp_class, side, stability = "insert_cr", None, "CR"
+        elif 253 <= n <= 259:
+            comp_class, side, stability = "insert_ps", None, "PS"
+        elif 261 <= n <= 262:
+            comp_class, side, stability = "insert_ps_plus", None, "PS"
+        elif 291 <= n <= 299:
+            comp_class, side, stability = "insert_uc", None, "UC"
+        elif 413 <= n <= 419:
+            comp_class, side, stability = "tibial_all_poly", None, None
+        elif len(bbb_str) == 4 and (
+            bbb_str.startswith("29") or bbb_str.startswith("15")
+        ):
+            comp_class, side, stability = "stem", None, None
+        else:
+            return _result()
+
+    # -- Decode CC based on component class --
+    try:
+        cc_int = int(cc)
+    except ValueError:
+        cc_int = None  # e.g. "X0"
+
+    size = None
+    thickness = None
+    diameter = None
+
+    if comp_class in (
+        "insert_cr",
+        "insert_ps",
+        "insert_ps_plus",
+        "insert_uc",
+        "tibial_all_poly",
+    ):
+        # CC = thickness in mm
+        if cc_int is not None:
+            thickness = str(cc_int)
+        # insert_cr also gets a size from BBB range
+        if comp_class == "insert_cr":
+            try:
+                size = _LINK_INSERT_CR_SIZE.get(int(bbb_str))
+            except ValueError:
+                pass
+
+    elif comp_class == "patella":
+        # CC = diameter in mm
+        if cc_int is not None:
+            diameter = str(cc_int)
+
+    elif comp_class == "stem":
+        # CC encodes diameter/length — return raw string as diameter
+        diameter = cc
+
+    else:
+        # femoral / tibial: CC → size
+        if cc == "X0":
+            size = "10"
+        elif cc_int is not None:
+            if cc_int % 10 == 0 and cc_int > 0:
+                size = str(cc_int // 10)
+            elif cc_int % 10 == 5:
+                size = f"{cc_int // 10}+"
+
+    r = _result(size=size, side=side, stability=stability, thickness=thickness)
+    if diameter is not None:
+        r["diameter"] = diameter
+    return r
 
 
 # ===========================================================================
@@ -756,6 +909,10 @@ def extract_from_catalogue(
                 r = fn(cat, comp)
                 if any(r.values()):
                     return r
+
+        # ---- Link Orthopaedics ----
+        if "link" in mfr:
+            return _link(cat)
 
         # ---- Smith & Nephew ----
         if "smith" in mfr and "nephew" in mfr:

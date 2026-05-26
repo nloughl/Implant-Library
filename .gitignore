@@ -1,0 +1,12 @@
+*.csv
+*.xlsx
+*.txt
+*.log
+*/*
+CLAUDE.md
+
+# Directory organization (all contents ignored by */* above):
+# logs/     — timestamped run logs from pipeline scripts
+# legacy/   — superseded scripts kept for reference
+# archive/  — old exploratory data files and pdf_texts/
+# tests/    — test scripts and sample output CSVs
