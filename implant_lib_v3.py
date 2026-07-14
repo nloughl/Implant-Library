@@ -304,6 +304,9 @@ class FieldExtractor:
 
     @staticmethod
     def extract_fixation(text: str) -> Optional[str]:
+        # Model names that definitively indicate cementless fixation
+        if re.search(r"\baffixium\b|\btritanium\b|\bosseo\s*ti\b|\btrabecular\s+metal\b", text, re.I):
+            return "Cementless"
         if re.search(r"\bcement(?:ed)?\b|\bnonporous\b", text, re.I):
             return "Cemented"
         if re.search(r"\bcementless\b|\buncemented\b|\bporous\b", text, re.I):
