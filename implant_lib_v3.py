@@ -262,7 +262,7 @@ class ComponentTypeClassifier:
                 return "Tibial Stem"
             return "Stem"
 
-        if any(w in t for w in ["insert", "bearing", "articular surface", "liner"]):
+        if any(w in t for w in ["insert", "bearing", "articular surface", "liner", "insrt", "articular surf"]):
             return "Insert"
 
         if any(w in t for w in ["patellar", "patella", "patello"]):
@@ -277,8 +277,7 @@ class ComponentTypeClassifier:
             return "Tibial"
 
         if any(w in t for w in ["tibial", "tibia"]) and "insert" not in t:
-            if any(w in t for w in ["baseplate", "tray", "platform", "component"]):
-                return "Tibial"
+            return "Tibial"
 
         # Femoral: match "femoral", "femur", or standalone "fem" abbreviation.
         # Guard against tibial context (→ TKA System below) and stems (caught above).

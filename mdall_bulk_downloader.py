@@ -175,7 +175,17 @@ EXCLUDE_KEYWORDS = [
     "electrodes",
     "penile",
     "biliary",
-    "ai"
+    "ai",
+    "inhaler",
+    "plasma",
+    "saline",
+    "exerciser",
+    "urinary",
+    "cardiopledgia",
+    "iliac",
+    "endotracheal",
+    "anesth",
+    "distractor"
 
 ]
 
