@@ -67,6 +67,7 @@ from eifu_downloader import (
     EIFUDownloadOrchestrator,
     _brand_to_system,
 )
+from Convert_MDALL_to_CJRR import standardize_manufacturer, edit_catalogue_number
 from gudid_description_enricher import enrich_dataframe as _enrich_gudid_descriptions
 from catalogue_num_sizer import extract_from_catalogue as _cat_size
 
@@ -1666,6 +1667,27 @@ class KneeImplantPipeline:
         logger.info("=" * 70)
 
     # ------------------------------------------------------------------
+    # CJRR column annotation
+    # ------------------------------------------------------------------
+
+    def _add_cjrr_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Append CJRR_Manufacturer and CJRR_catnum columns to the final df."""
+        df = df.copy()
+        df["CJRR_Manufacturer"] = (
+            df["manufacturer"].fillna("").apply(standardize_manufacturer)
+        )
+        df["CJRR_catnum"] = df.apply(
+            lambda row: ";".join(
+                edit_catalogue_number(
+                    str(row.get("catalogue_num") or ""),
+                    row["CJRR_Manufacturer"],
+                )
+            ),
+            axis=1,
+        )
+        return df
+
+    # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
 
@@ -1736,6 +1758,7 @@ class KneeImplantPipeline:
         self._annotate_persona_pairs()
         df = self._to_dataframe()
         df = self._recompute_review_flags(df)
+        df = self._add_cjrr_columns(df)
         self._print_summary(df)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
