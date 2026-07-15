@@ -322,10 +322,16 @@ class FieldExtractor:
         # Model names that definitively indicate cementless fixation
         if re.search(r"\baffixium\b|\btritanium\b|\bosseo\s*ti\b|\btrabecular\s+metal\b|\bbiofoam\b", text, re.I):
             return "Cementless"
-        if re.search(r"\bcement(?:ed)?\b|\bnonporous\b", text, re.I):
+        # nonporous / non-porous must be caught before the porous check below
+        if re.search(r"\bnon-?porous\b", text, re.I):
             return "Cemented"
+        # Cementless signals before generic cement: search_text includes device_name
+        # (FDA product code description, e.g. "Cemented" in HRY), which would
+        # otherwise cause porous/cementless devices to be misclassified.
         if re.search(r"\bcementless\b|\buncemented\b|\bporous\b", text, re.I):
             return "Cementless"
+        if re.search(r"\bcement(?:ed)?\b", text, re.I):
+            return "Cemented"
         if re.search(r"\bhybrid\b", text, re.I):
             return "Hybrid"
         return None
