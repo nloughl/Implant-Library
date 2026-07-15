@@ -166,6 +166,17 @@ EXCLUDE_KEYWORDS = [
     "cone",
     "wedge",
     "bolt",
+    "catheter",
+    "exercise",
+    "suction",
+    "ultrasound",
+    "aortic",
+    "fill tips",
+    "electrodes",
+    "penile",
+    "biliary",
+    "ai"
+
 ]
 
 BASE_URL = "https://health-products.canada.ca/api/medical-devices"

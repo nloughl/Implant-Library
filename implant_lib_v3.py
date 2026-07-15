@@ -268,15 +268,25 @@ class ComponentTypeClassifier:
         if any(w in t for w in ["patellar", "patella", "patello"]):
             return "Patellar"
 
+        # All-poly and monoblock always mean a one-piece tibial tray
+        if re.search(r"\ball[-\s]?poly\b", t) or "monoblock" in t:
+            return "Monoblock Tibial"
+
+        # Baseplate is always tibial (even without the word "tibial" present)
+        if "baseplate" in t:
+            return "Tibial"
+
         if any(w in t for w in ["tibial", "tibia"]) and "insert" not in t:
             if any(w in t for w in ["baseplate", "tray", "platform", "component"]):
                 return "Tibial"
 
-        if any(w in t for w in ["femoral", "femur"]) and not re.search(
-            r"\bstems?\b", t
-        ):
-            if any(w in t for w in ["component", "condyle"]):
-                return "Femoral"
+        # Femoral: match "femoral", "femur", or standalone "fem" abbreviation.
+        # Guard against tibial context (→ TKA System below) and stems (caught above).
+        if (
+            any(w in t for w in ["femoral", "femur"])
+            or re.search(r"\bfem\b", t)
+        ) and not re.search(r"\bstems?\b", t) and "tibial" not in t and "tibia" not in t:
+            return "Femoral"
 
         if "femorotibial" in t or ("femoral" in t and "tibial" in t):
             return "TKA System"
@@ -284,19 +294,24 @@ class ComponentTypeClassifier:
         return None
 
     @staticmethod
-    def classify(gmdn_name: str = "", device_description: str = "") -> Optional[str]:
-        """Classify component type, checking device_description before gmdn_name.
+    def classify(
+        gmdn_name: str = "",
+        device_description: str = "",
+        brand_name: str = "",
+        mdall_brand_name: str = "",
+    ) -> Optional[str]:
+        """Classify component type, checking fields from most to least specific.
 
-        device_description is per-device free text (e.g. "Articulating surface,
-        vitamin E highly crosslinked UHMWPE, fixed bearing UC") and is more
-        specific than the GMDN category label.  gmdn_name is used as fallback
-        when device_description is absent or unclassifiable.
+        Order: device_description → mdall_brand_name → brand_name → gmdn_name.
+        device_description is per-device free text and most specific; gmdn_name
+        describes the device class and is used only as a last resort.
         """
-        if device_description:
-            result = ComponentTypeClassifier._classify_text(device_description)
-            if result is not None:
-                return result
-        return ComponentTypeClassifier._classify_text(gmdn_name)
+        for text in [device_description, mdall_brand_name, brand_name, gmdn_name]:
+            if text:
+                result = ComponentTypeClassifier._classify_text(text)
+                if result is not None:
+                    return result
+        return None
 
 
 class FieldExtractor:
@@ -305,7 +320,7 @@ class FieldExtractor:
     @staticmethod
     def extract_fixation(text: str) -> Optional[str]:
         # Model names that definitively indicate cementless fixation
-        if re.search(r"\baffixium\b|\btritanium\b|\bosseo\s*ti\b|\btrabecular\s+metal\b", text, re.I):
+        if re.search(r"\baffixium\b|\btritanium\b|\bosseo\s*ti\b|\btrabecular\s+metal\b|\bbiofoam\b", text, re.I):
             return "Cementless"
         if re.search(r"\bcement(?:ed)?\b|\bnonporous\b", text, re.I):
             return "Cemented"
@@ -373,6 +388,10 @@ class FieldExtractor:
         m = re.search(r"\bS\d+([LR])\b", text)
         if m:
             return "Right" if m.group(1).upper() == "R" else "Left"
+        # Zimmer Persona: catalogue number 42-5NNN-NNN-01 (Left) / -02 (Right)
+        m = re.search(r"\b42-5\d{3}-\d{3}-(01|02)\b", text)
+        if m:
+            return "Left" if m.group(1) == "01" else "Right"
         if re.search(r"\bleft\b", text, re.I):
             return "Left"
         if re.search(r"\bright\b", text, re.I):
@@ -782,16 +801,16 @@ class FieldApplicabilityMatrix:
     """Marks fields as N/A or Missing based on component type."""
 
     APPLICABILITY: Dict[str, List[str]] = {
-        "stability": ["Femoral", "Insert", "TKA System"],
+        "stability": ["Femoral", "Insert", "TKA System", "Monoblock Tibial"],
         "bearing_type": ["Insert"],
-        "fixation": ["Femoral", "Tibial", "TKA System"],
-        "surface_treatment": ["Femoral", "Tibial"],
-        "design_fixation_surface": ["Femoral", "Tibial", "Patellar"],
+        "fixation": ["Femoral", "Tibial", "Monoblock Tibial", "TKA System"],
+        "surface_treatment": ["Femoral", "Tibial", "Monoblock Tibial"],
+        "design_fixation_surface": ["Femoral", "Tibial", "Monoblock Tibial", "Patellar"],
         "design_articular_surface": ["Femoral", "Insert"],
-        "ap_length": ["Femoral", "Tibial"],
-        "ml_width": ["Tibial"],
+        "ap_length": ["Femoral", "Tibial", "Monoblock Tibial"],
+        "ml_width": ["Tibial", "Monoblock Tibial"],
         "diameter": ["Patellar", "Femoral Stem", "Tibial Stem", "Stem"],
-        "thickness": ["Insert"],
+        "thickness": ["Insert", "Monoblock Tibial"],
     }
 
     @staticmethod
@@ -1342,6 +1361,8 @@ class KneeImplantPipeline:
             record.component_type = ComponentTypeClassifier.classify(
                 gmdn_name=record.gmdn_name or "",
                 device_description=record.device_description or "",
+                brand_name=record.brand_name or "",
+                mdall_brand_name=record.mdall_brand_name or "",
             )
 
         # Design fields
@@ -1481,6 +1502,20 @@ class KneeImplantPipeline:
     # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
+
+    def _annotate_persona_pairs(self) -> None:
+        """Append a note to Persona records whose left and right variants both exist in the dataset."""
+        persona_pat = re.compile(r"^(42-5\d{3}-\d{3})-(01|02)$")
+        by_base: Dict[str, list] = {}
+        for rec in self.records:
+            m = persona_pat.match(rec.catalogue_num or "")
+            if m:
+                by_base.setdefault(m.group(1), []).append(rec)
+        for base, recs in by_base.items():
+            if len(recs) == 2:
+                note = f"paired left/right: {base}-01 / {base}-02"
+                for rec in recs:
+                    rec.notes = " | ".join(filter(None, [rec.notes, note]))
 
     # Fields where we take the first non-empty value across all rows sharing
     # a catalogue number.  Order matters: we try primary first, then fill from
@@ -1693,6 +1728,7 @@ class KneeImplantPipeline:
             self.records.append(record)
 
         # -- Stage 8: export ---------------------------------------------
+        self._annotate_persona_pairs()
         df = self._to_dataframe()
         df = self._recompute_review_flags(df)
         self._print_summary(df)
