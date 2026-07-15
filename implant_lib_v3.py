@@ -101,7 +101,8 @@ _COALESCE_FIELDS = [
     "side",
     "size",
     "thickness",
-    "ap_length",
+    "ap_medial",
+    "ap_lateral",
     "ml_width",
     "diameter",
     "design_articular_surface",
@@ -216,7 +217,8 @@ class ImplantRecord:
 
     # --- Dimensions ---------------------------------------------------------
     size: Optional[str] = None
-    ap_length: Optional[float] = None
+    ap_medial: Optional[float] = None
+    ap_lateral: Optional[float] = None
     ml_width: Optional[float] = None
     thickness: Optional[float] = None
     diameter: Optional[float] = None
@@ -608,11 +610,13 @@ class FieldExtractor:
         """Parse GUDID device_sizes_text pipe-separated key-value pairs.
 
         Input format: "Width: 60 mm | Height: 9 mm | Length: 72 mm"
-        Returns a dict with keys: ap_length, ml_width, thickness, diameter
+        Returns a dict with keys: ap_medial, ap_lateral, ml_width, thickness, diameter
         (float mm values, or None if the label was not found).
+        GUDID size text has no medial/lateral split so ap_lateral is always None here.
         """
         result: Dict[str, Optional[float]] = {
-            "ap_length": None,
+            "ap_medial": None,
+            "ap_lateral": None,
             "ml_width": None,
             "thickness": None,
             "diameter": None,
@@ -620,7 +624,7 @@ class FieldExtractor:
         if not isinstance(sizes_text, str):
             return result
         _MAP = {
-            "ap_length": re.compile(r"\b(?:ap|length|anterior.posterior)\b", re.I),
+            "ap_medial": re.compile(r"\b(?:ap|length|anterior.posterior)\b", re.I),
             "ml_width": re.compile(r"\b(?:ml|width|medial.lateral)\b", re.I),
             "thickness": re.compile(r"\b(?:thickness|height)\b", re.I),
             "diameter": re.compile(r"\b(?:diameter|diam)\b", re.I),
@@ -813,7 +817,8 @@ class FieldApplicabilityMatrix:
         "surface_treatment": ["Femoral", "Tibial", "Monoblock Tibial"],
         "design_fixation_surface": ["Femoral", "Tibial", "Monoblock Tibial", "Patellar"],
         "design_articular_surface": ["Femoral", "Insert"],
-        "ap_length": ["Femoral", "Tibial", "Monoblock Tibial"],
+        "ap_medial": ["Femoral", "Tibial", "Monoblock Tibial"],
+        "ap_lateral": ["Femoral", "Tibial", "Monoblock Tibial"],
         "ml_width": ["Tibial", "Monoblock Tibial"],
         "diameter": ["Patellar", "Femoral Stem", "Tibial Stem", "Stem"],
         "thickness": ["Insert", "Monoblock Tibial"],
@@ -1425,8 +1430,9 @@ class KneeImplantPipeline:
             dims = FieldExtractor.extract_dimensions_from_sizes_text(
                 record.device_sizes_text
             )
-            if not record.ap_length and dims["ap_length"]:
-                record.ap_length = dims["ap_length"]
+            if not record.ap_medial and dims["ap_medial"]:
+                record.ap_medial = dims["ap_medial"]
+                record.ap_lateral = dims["ap_medial"]  # GUDID has no split; fill both
             if not record.ml_width and dims["ml_width"]:
                 record.ml_width = dims["ml_width"]
             if not record.thickness and dims["thickness"]:
