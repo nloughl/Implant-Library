@@ -11,13 +11,13 @@ both ap_medial and ap_lateral receive the same value.  For asymmetric tibial
 baseplates (Persona Keeled), ap_medial and ap_lateral differ.
 
 Usage:
-    python enrich_reference_data.py --library outputs/knee_implant_library_*.csv
+    python enrich_reference_data.py --library outputs/knee_implant_library_*.xlsx
     python enrich_reference_data.py --library outputs/... \\
         --zimmer-ortech ZimmerOrtechImplants.xlsx \\
         --tka-dims "TKA Model Info With Dimensions.xlsx"
 
 Output:
-    outputs/knee_implant_library_enriched_<timestamp>.csv
+    outputs/knee_implant_library_enriched_<timestamp>.xlsx
 """
 
 import argparse
@@ -365,7 +365,7 @@ def enrich_library(
     tka_dims_path: Optional[str],
     output_dir: str = "outputs",
 ) -> str:
-    """Load library excel file, apply enrichments, write enriched CSV.  Returns output path."""
+    """Load library excel file, apply enrichments, write enriched excel file.  Returns output path."""
     library_path = _resolve_glob(library_path)
     log.info("Library: %s", library_path)
 
@@ -462,8 +462,8 @@ def enrich_library(
     # --- Write output ---
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(output_dir, f"knee_implant_library_enriched_{timestamp}.csv")
-    df.to_csv(out_path, index=False)
+    out_path = os.path.join(output_dir, f"knee_implant_library_enriched_{timestamp}.xlsx")
+    df.to_excel(out_path, index=False)
 
     log.info("ZimmerOrtech: %d records touched, %d fields filled", n_ortech, n_fields_ortech)
     log.info("TKADims:      %d records touched, %d fields filled", n_tka, n_fields_tka)
@@ -483,7 +483,7 @@ def main() -> None:
     parser.add_argument(
         "--library",
         required=True,
-        help="Path or glob to the library CSV (e.g. outputs/knee_implant_library_*.csv)",
+        help="Path or glob to the library excel file (e.g. outputs/knee_implant_library_*.xlsx)",
     )
     parser.add_argument(
         "--zimmer-ortech",
