@@ -7,16 +7,16 @@ A data pipeline for building a structured reference library of Canadian knee imp
 ## Overview
 
 ```
-FDA GUDID ──┐
-            ├─► GMDN Filter ─► Merge ─► CJRR Filter ─► GUDID API Enrichment ─► eIFU Download (opt)
-MDALL ──────┘                                                                  ─► eIFU Extraction
-                                                                               ─► NZ CSV Supplement
-                                                                               ─► Catalogue Size Fallback
-                                                                               ─► Export + Review Report
-                                                                               ─► enrich_reference_data.py (post)
+FDA GUDID ──► GMDN Filter ──────────┐
+                                     ├─► Merge ─► CJRR Filter ─► GUDID API Enrichment ─► eIFU Download (opt)
+MDALL ──────► Keyword Filter ───────┘                                                    ─► eIFU Extraction
+                                                                                          ─► NZ CSV Supplement
+                                                                                          ─► Catalogue Size Fallback
+                                                                                          ─► Export + Review Report
+                                                                                          ─► enrich_reference_data.py (post)
 ```
 
-The pipeline pulls device records from two regulatory sources, filters out non-implant instruments via GMDN terms, merges on catalogue number, filters to CJRR-recognised manufacturers, enriches device descriptions via the GUDID REST API, extracts material compositions from eIFU PDFs, and flags records that still require manual data entry.
+The pipeline pulls device records from two regulatory sources, filters out non-implant instruments via GMDN terms (GUDID) and trade-name keywords (MDALL), merges on catalogue number, filters to CJRR-recognised manufacturers, enriches device descriptions via the GUDID REST API, extracts material compositions from eIFU PDFs, and flags records that still require manual data entry.
 
 `enrich_reference_data.py` is a standalone post-processing step that enriches the library with AP/ML dimensions and material data from two supplemental Excel reference files.
 
@@ -76,6 +76,7 @@ python enrich_reference_data.py --library "outputs/knee_implant_library_*.csv"
 | 1 | GUDID bulk download | `optimized_gudid_downloader.py` | `gudid_downloads/knee_implants_filtered_*.csv` |
 | 1a | GMDN instrument filter | `KneeImplantPipeline._filter_gmdn_exclusions()` | Applied in-memory to GUDID DataFrame before merge |
 | 2 | MDALL bulk download | `mdall_bulk_downloader.py` | `mdall_downloads/mdall_knee_devices_*.csv` |
+| 2a | MDALL keyword exclusion filter | `MDALLBulkDownloader._is_instrument()` | Applied in-memory to MDALL records before/while downloading |
 | 3 | Merge GUDID + MDALL | `merge_gudid_mdall.py` | `merged_gudid_mdall_*.csv` |
 | 4 | CJRR manufacturer filter | `filter_cjrr.py` | `cjrr_filtered_*.csv` |
 | 4c | GUDID API description enrichment | `gudid_description_enricher.py` | Adds `DEVICE_DESCRIPTION`, `DEVICE_SIZES_TEXT` columns |
@@ -307,6 +308,8 @@ python gudid_description_enricher.py \
 ### `catalogue_num_sizer.py` — Catalogue Number Size Extractor
 Fallback size extraction using manufacturer-specific catalogue number conventions. Called automatically in the enrichment stage when `size`, `side`, `thickness`, or `stability` could not be determined from free text.
 
+See [`docs/catalogue_num_sizer_rules.md`](docs/catalogue_num_sizer_rules.md) for the full per-manufacturer/system rule reference (every regex, lookup table, and decoding rule).
+
 Supported manufacturers and systems:
 
 | Manufacturer | System | Fields decoded |
@@ -363,6 +366,8 @@ Downloads device records from the FDA GUDID for knee-implant product codes (JWH,
 ### `mdall_bulk_downloader.py` — MDALL Bulk Downloader
 Downloads device records from the Health Canada Medical Devices Active Licence Listing (MDALL) for knee implant search terms. Output saved to `mdall_downloads/`.
 
+Applies a keyword exclusion filter (`_is_instrument()` against `EXCLUDE_KEYWORDS`) to trade names — see [MDALL Keyword Exclusion Filter](#mdall-keyword-exclusion-filter) below.
+
 ### `filter_cjrr.py` — CJRR Manufacturer Filter
 Filters the merged dataset to records belonging to manufacturers recognised by the Canadian Joint Replacement Registry (CJRR). Output saved as `cjrr_filtered_*.csv`.
 
@@ -399,6 +404,29 @@ Before merging with MDALL, GUDID records whose GMDN term matches any of the foll
 - **Packaging / kits**: instrument kit, surgical kit, splint
 
 A safety-net pass of the same filter is also applied to `base_df` when entering the pipeline from `--merged` or `--cjrr` (where the GUDID download step is skipped).
+
+---
+
+## MDALL Keyword Exclusion Filter
+
+MDALL has no GMDN-equivalent category field, so `mdall_bulk_downloader.py` filters out non-implant devices by matching trade names against a flat keyword list (`EXCLUDE_KEYWORDS` in `mdall_bulk_downloader.py`) instead. `MDALLBulkDownloader._is_instrument(trade_name)` lowercases the trade name and returns `True` if any keyword is a substring match.
+
+Applied in two places:
+- **`download_by_name()`** — filters raw search results immediately after each MDALL query, before rows are built
+- **`_filter_gmdn_style()`** — a safety-net pass over the `BRAND_NAME` column, mirroring the GUDID GMDN filter, for cases where MDALL data enters the pipeline pre-downloaded
+
+Keyword categories in `EXCLUDE_KEYWORDS`:
+- **Instruments / tools**: instrument, drill, saw, rasp, reamer, impactor, extractor, inserter, retractor, forceps, clamp, holder, handle, driver, wrench, stylus, tibial stylus, adapter, adaptor, connector, coupler, distractor, exerciser
+- **Trial components**: trial
+- **Fixation hardware**: screw, pin, wire, bolt
+- **Guides / blocks**: guide, template, positioning, alignment, alignment handle, cutting, cutting block, cut block, resection, resection block, flexion block, slope block, var-val block, a/p shift block, planer, angle wing
+- **Cement / consumable supplies**: cement, mixing, dispenser, spatula, packing, fill tips
+- **Packaging**: tray, case, container, kit, set, system pack, packaging
+- **Soft-tissue balancing**: balancer, spacer, tensor, spreader, wedge, cone
+- **Documentation**: surgical technique, op tech, optech, surgical protocol, examination
+- **Unrelated medical devices / anatomy** (broad net catching non-knee, non-orthopedic device names): syringe, catheter, suction, ultrasound, aortic, electrodes, penile, biliary, inhaler, plasma, saline, urinary, cardiopledgia, iliac, endotracheal, anesth, hoses, valve, antibacterial, gloves, exercise, transmitter, hearing aid, substrate, "ai"
+
+**Note**: `"ai"` and `"set"` are broad substring matches — they will also match inside unrelated words (e.g. "ai" matches "maintenance", "set" matches "reset" or "offset"). This is a known tradeoff for catching abbreviations like AI-coated liners; review MDALL output for false-positive exclusions if a brand name unexpectedly disappears.
 
 ---
 
